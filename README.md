@@ -17,3 +17,4 @@
 * **Progresión por Sectores:** El juego se organiza en 4 zonas de dificultad ascendente (iniciando en la *Zona 1: Muelle de Carga*).
 * **Condición de Victoria:** El jugador debe eliminar a la totalidad de los terroristas del sector activo. Al despejar el área, el motor genera una escalera de evacuación física que permite avanzar al siguiente nivel hasta alcanzar el enfrentamiento final contra un jefe con barra de vida propia.
 * **Interfaz de Usuario (HUD):** Incluye minimapa en tiempo real, contador de enemigos restantes, puntuación acumulada, barra de jefe y menús interactivos de pausa, misión fallida y victoria.
+DESPLEGADO: https://shooter-web-jet.vercel.app/
