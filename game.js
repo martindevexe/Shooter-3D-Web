@@ -36,11 +36,11 @@ function initThree() {
   renderer.setPixelRatio(quality.pr);
   renderer.setSize(SW, SH, false);
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFShadowMap;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.shadowMap.autoUpdate = false;
   renderer.shadowMap.needsUpdate = true;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = .82;
+  renderer.toneMappingExposure = .95;
   renderer.outputEncoding = THREE.sRGBEncoding;
   const mmScale = Math.min(dpr, 2);
   minimapCanvas.width = Math.round(150 * mmScale);
@@ -1176,7 +1176,9 @@ function buildLampFixture(color) {
   const cap = new THREE.Mesh(new THREE.CylinderGeometry(3, 3, 3, 8), housingMat);
   cap.position.y = 19;
   group.add(cap);
-  return mergeStaticChildren(group);
+  mergeStaticChildren(group);
+  group.userData.lensMat = lensMat;
+  return group;
 }
 const PLAT = 112;
 const RAIL_DOWN = -44;
@@ -1425,6 +1427,323 @@ function spawnExitElevator() {
   scene.add(exitElevator);
   zoneMeshes.push(exitElevator);
   elevators.push(exitElevator);
+}
+const ZONE_LIGHTING = [ {
+  main: 16756834,
+  alt: 16764815,
+  alarm: 16726570,
+  sky: 7035464,
+  ground: 3812384,
+  hemi: .22,
+  ceil: 9075302
+}, {
+  main: 13624063,
+  alt: 11060479,
+  alarm: 16752704,
+  sky: 5660782,
+  ground: 2765622,
+  hemi: .22,
+  ceil: 8226192
+}, {
+  main: 10420182,
+  alt: 7331024,
+  alarm: 16726570,
+  sky: 4086357,
+  ground: 1910313,
+  hemi: .2,
+  ceil: 7309956
+}, {
+  main: 16734780,
+  alt: 16752736,
+  alarm: 16719904,
+  sky: 6173748,
+  ground: 3348765,
+  hemi: .2,
+  ceil: 9071206
+} ];
+const LAMP_LIGHT_Y = CEILING_HEIGHT - 32;
+const LAMP_RANGE = 600;
+const SPOT_SHARE = .75;
+const CONE_H = CEILING_HEIGHT - 26;
+let lampRigs = [];
+let shadowSpot = null, shadowLamp = null, pendingLamp = null, shadowW = 0;
+let ceilingTexCache = null, coneTexCache = null, poolTexCache = null, dotTexCache = null, glowTexCache = null;
+function radialTexture(size, stops) {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d");
+  const gr = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  for (const [o, col] of stops) gr.addColorStop(o, col);
+  g.fillStyle = gr;
+  g.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(c);
+}
+function poolTexture() {
+  if (!poolTexCache) poolTexCache = radialTexture(128, [ [ 0, "rgba(255,255,255,0.9)" ], [ .35, "rgba(255,255,255,0.45)" ], [ .7, "rgba(255,255,255,0.12)" ], [ 1, "rgba(255,255,255,0)" ] ]);
+  return poolTexCache;
+}
+function dotTexture() {
+  if (!dotTexCache) dotTexCache = radialTexture(32, [ [ 0, "rgba(255,255,255,1)" ], [ .4, "rgba(255,255,255,0.5)" ], [ 1, "rgba(255,255,255,0)" ] ]);
+  return dotTexCache;
+}
+function glowTexture() {
+  if (!glowTexCache) glowTexCache = radialTexture(64, [ [ 0, "rgba(255,255,255,1)" ], [ .2, "rgba(255,255,255,0.7)" ], [ .5, "rgba(255,255,255,0.18)" ], [ 1, "rgba(255,255,255,0)" ] ]);
+  return glowTexCache;
+}
+function coneTexture() {
+  if (coneTexCache) return coneTexCache;
+  const c = document.createElement("canvas");
+  c.width = 4;
+  c.height = 128;
+  const g = c.getContext("2d");
+  const gr = g.createLinearGradient(0, 0, 0, 128);
+  gr.addColorStop(0, "rgba(255,255,255,1)");
+  gr.addColorStop(.35, "rgba(255,255,255,0.45)");
+  gr.addColorStop(.8, "rgba(255,255,255,0.08)");
+  gr.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = gr;
+  g.fillRect(0, 0, 4, 128);
+  coneTexCache = new THREE.CanvasTexture(c);
+  return coneTexCache;
+}
+function ceilingTexture() {
+  if (ceilingTexCache) return ceilingTexCache;
+  ceilingTexCache = makeTexture((c, w, h) => {
+    c.fillStyle = "#7a7c78";
+    c.fillRect(0, 0, w, h);
+    const rib = 16;
+    for (let x = 0; x < w; x += rib) {
+      const g = c.createLinearGradient(x, 0, x + rib, 0);
+      g.addColorStop(0, "rgba(0,0,0,0.45)");
+      g.addColorStop(.3, "rgba(0,0,0,0.05)");
+      g.addColorStop(.5, "rgba(255,255,255,0.14)");
+      g.addColorStop(.7, "rgba(0,0,0,0.05)");
+      g.addColorStop(1, "rgba(0,0,0,0.45)");
+      c.fillStyle = g;
+      c.fillRect(x, 0, rib, h);
+    }
+    for (let y = 0; y < h; y += 128) {
+      c.fillStyle = "rgba(0,0,0,0.6)";
+      c.fillRect(0, y, w, 4);
+      c.fillStyle = "rgba(255,255,255,0.08)";
+      c.fillRect(0, y + 4, w, 1);
+      c.fillStyle = "rgba(210,205,190,0.3)";
+      for (let x = 0; x < w; x += rib) c.fillRect(x + 7, y + 8, 2, 2);
+    }
+    for (let i = 0; i < 14; i++) {
+      const x = Math.random() * w, y = Math.random() * h, r = rand(14, 46);
+      const g = c.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, "rgba(10,8,5,0.35)");
+      g.addColorStop(1, "rgba(10,8,5,0)");
+      c.fillStyle = g;
+      c.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+    c.fillStyle = "rgba(90,50,20,0.16)";
+    for (let i = 0; i < 9; i++) c.fillRect(Math.random() * w, Math.random() * h, rand(2, 4), rand(20, 70));
+  }, 256, 256);
+  return ceilingTexCache;
+}
+function flickerFactor(L, t) {
+  if (!L.flicker) return 1;
+  const n = Math.sin(t * 2.3 + L.phase) + Math.sin(t * 5.7 + L.phase * 1.3) * .6 + Math.sin(t * 13.1 + L.phase * .7) * .4;
+  if (n > 1.35) return Math.sin(t * 90) > 0 ? .08 : .65;
+  if (n > 1.05) return .5;
+  return 1;
+}
+function buildLampRig(x, z, color, intensity, flicker) {
+  const objs = [];
+  const light = new THREE.PointLight(color, intensity, LAMP_RANGE, 1.6);
+  light.position.set(x, LAMP_LIGHT_Y, z);
+  objs.push(light);
+  const fixture = buildLampFixture(color);
+  fixture.position.set(x, CEILING_HEIGHT - 20, z);
+  objs.push(fixture);
+  const cone = new THREE.Mesh(new THREE.CylinderGeometry(11, 165, CONE_H, 28, 1, true), new THREE.MeshBasicMaterial({
+    color: color,
+    map: coneTexture(),
+    transparent: true,
+    opacity: .07,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide
+  }));
+  cone.position.set(x, CONE_H / 2, z);
+  cone.renderOrder = 3;
+  objs.push(cone);
+  const pool = new THREE.Mesh(new THREE.CircleGeometry(230, 40), new THREE.MeshBasicMaterial({
+    color: color,
+    map: poolTexture(),
+    transparent: true,
+    opacity: .16,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -4
+  }));
+  pool.rotation.x = -Math.PI / 2;
+  pool.position.set(x, .4, z);
+  pool.renderOrder = 2;
+  objs.push(pool);
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTexture(),
+    color: color,
+    transparent: true,
+    opacity: .85,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  }));
+  halo.position.set(x, CEILING_HEIGHT - 28, z);
+  halo.scale.set(64, 64, 1);
+  halo.renderOrder = 3;
+  objs.push(halo);
+  const N = 42;
+  const pos = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    const y = rand(10, CONE_H - 20);
+    const r = (11 + (165 - 11) * (1 - y / CONE_H)) * Math.sqrt(Math.random()) * .85;
+    const a = rand(0, Math.PI * 2);
+    pos[i * 3] = Math.cos(a) * r;
+    pos[i * 3 + 1] = y;
+    pos[i * 3 + 2] = Math.sin(a) * r;
+  }
+  const dustGeo = new THREE.BufferGeometry;
+  dustGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  const dust = new THREE.Points(dustGeo, new THREE.PointsMaterial({
+    color: color,
+    map: dotTexture(),
+    size: 2.6,
+    transparent: true,
+    opacity: .5,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  }));
+  dust.position.set(x, 0, z);
+  dust.renderOrder = 3;
+  objs.push(dust);
+  return {
+    x: x,
+    y: z,
+    light: light,
+    base: intensity,
+    color: new THREE.Color(color),
+    flicker: !!flicker,
+    f: 1,
+    d: 0,
+    phase: rand(0, 100),
+    cone: cone,
+    pool: pool,
+    halo: halo,
+    dust: dust,
+    lensMat: fixture.userData.lensMat,
+    lensBase: new THREE.Color(color),
+    objs: objs
+  };
+}
+function placeShadowSpot(L) {
+  shadowSpot.color.copy(L.color);
+  shadowSpot.position.set(L.x, LAMP_LIGHT_Y, L.y);
+  shadowSpot.target.position.set(L.x, 0, L.y);
+  shadowSpot.target.updateMatrixWorld();
+  renderer.shadowMap.needsUpdate = true;
+}
+function updateLamps(dt) {
+  if (!shadowSpot) return;
+  if (!lampRigs.length) {
+    shadowSpot.intensity = 0;
+    return;
+  }
+  const t = performance.now() / 1e3;
+  let best = null, bd = Infinity;
+  for (const L of lampRigs) {
+    L.f = flickerFactor(L, t);
+    L.d = Math.hypot(L.x - player.x, L.y - player.y);
+    if (L.d < bd) {
+      bd = L.d;
+      best = L;
+    }
+    L.cone.material.opacity = .1 * L.f;
+    L.pool.material.opacity = .2 * L.f;
+    L.halo.material.opacity = .85 * L.f;
+    if (L.lensMat) L.lensMat.color.copy(L.lensBase).multiplyScalar(.2 + .8 * L.f);
+    L.dust.rotation.y += dt * .05;
+    L.dust.position.y = Math.sin(t * .35 + L.phase) * 6;
+  }
+  if (!shadowLamp || lampRigs.indexOf(shadowLamp) === -1) {
+    shadowLamp = best;
+    pendingLamp = null;
+    shadowW = 0;
+    placeShadowSpot(best);
+  } else if (!pendingLamp && best !== shadowLamp && bd < shadowLamp.d - 70) {
+    pendingLamp = best;
+  }
+  if (pendingLamp) {
+    shadowW = Math.max(0, shadowW - dt / .3);
+    if (shadowW === 0) {
+      shadowLamp = pendingLamp;
+      pendingLamp = null;
+      placeShadowSpot(shadowLamp);
+    }
+  } else {
+    shadowW = Math.min(1, shadowW + dt / .35);
+  }
+  for (const L of lampRigs) L.light.intensity = L.base * L.f * (L === shadowLamp ? 1 - SPOT_SHARE * shadowW : 1);
+  shadowSpot.intensity = shadowLamp.base * shadowLamp.f * SPOT_SHARE * shadowW * 1.3;
+}
+function buildCeilingDetails(z, hx0, hx1, hz0, hz1) {
+  const g = new THREE.Group;
+  const pipeMat = new THREE.MeshStandardMaterial({
+    map: gunPanelTexture(3815478),
+    color: 16777215,
+    roughness: .45,
+    metalness: .7
+  });
+  const ductMat = new THREE.MeshStandardMaterial({
+    map: gunPanelTexture(5988450),
+    color: 16777215,
+    roughness: .55,
+    metalness: .55
+  });
+  const pad = 14;
+  const spans = (a0, a1, h0, h1, crosses) => {
+    if (!crosses) return [ [ a0, a1 ] ];
+    const out = [];
+    if (h0 - pad > a0) out.push([ a0, h0 - pad ]);
+    if (h1 + pad < a1) out.push([ h1 + pad, a1 ]);
+    return out;
+  };
+  const pipeY = CEILING_HEIGHT - 30;
+  for (const pz of [ z.worldH * .36, z.worldH * .36 + 15, z.worldH * .66 ]) {
+    const crosses = pz > hz0 - pad && pz < hz1 + pad;
+    for (const [a, b] of spans(0, z.worldW, hx0, hx1, crosses)) {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(4.5, 4.5, b - a, 10, 1, true), pipeMat);
+      m.rotation.z = Math.PI / 2;
+      m.position.set((a + b) / 2, pipeY, pz);
+      g.add(m);
+    }
+    for (let x = 70; x < z.worldW; x += 140) {
+      if (crosses && x > hx0 - pad && x < hx1 + pad) continue;
+      const hanger = new THREE.Mesh(new THREE.BoxGeometry(1.6, 26, 1.6), pipeMat);
+      hanger.position.set(x, CEILING_HEIGHT - 15, pz);
+      const clamp1 = new THREE.Mesh(new THREE.BoxGeometry(3, 11, 11), pipeMat);
+      clamp1.position.set(x, pipeY, pz);
+      g.add(hanger, clamp1);
+    }
+  }
+  const dx = z.worldW * .62;
+  const ductCross = dx > hx0 - pad - 20 && dx < hx1 + pad + 20;
+  const ductY = CEILING_HEIGHT - 32;
+  for (const [a, b] of spans(0, z.worldH, hz0, hz1, ductCross)) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(36, 14, b - a), ductMat);
+    m.position.set(dx, ductY, (a + b) / 2);
+    g.add(m);
+    for (let zz = a + 30; zz < b - 10; zz += 60) {
+      const rib = new THREE.Mesh(new THREE.BoxGeometry(39, 15, 3), ductMat);
+      rib.position.set(dx, ductY, zz);
+      g.add(rib);
+    }
+  }
+  return mergeStaticChildren(g);
 }
 function boundary(w, h, t) {
   return [ rect(0, 0, w, t), rect(0, h - t, w, t), rect(0, 0, t, h), rect(w - t, 0, t, h) ];
@@ -1736,8 +2055,8 @@ function loadZone(idx, keepHealth) {
   zoneMeshes.push(aoMesh);
   for (const g of wallGeos) g.dispose();
   for (const g of aoGeos) g.dispose();
-  const ceilTex = wallTexture(789514);
-  zoneTextures.push(floorTex, wallTex, ceilTex);
+  const zl = ZONE_LIGHTING[idx % ZONE_LIGHTING.length];
+  zoneTextures.push(floorTex, wallTex);
   const holeHalf = PLAT / 2 + 1;
   const hx0 = z.playerStart.x - holeHalf, hx1 = z.playerStart.x + holeHalf;
   const hz0 = z.playerStart.y - holeHalf, hz1 = z.playerStart.y + holeHalf;
@@ -1747,13 +2066,14 @@ function loadZone(idx, keepHealth) {
     g.rotateX(Math.PI / 2);
     g.translate((xa + xb) / 2, CEILING_HEIGHT, (za + zb) / 2);
     const pos = g.attributes.position, uv = g.attributes.uv;
-    for (let i = 0; i < pos.count; i++) uv.setXY(i, pos.getX(i) / 70, pos.getZ(i) / 70);
+    for (let i = 0; i < pos.count; i++) uv.setXY(i, pos.getX(i) / 160, pos.getZ(i) / 160);
     const ng = bakedGeometry(g);
     g.dispose();
     return ng;
   });
   const ceiling = new THREE.Mesh(concatGeometries(ceilPieces), new THREE.MeshLambertMaterial({
-    map: ceilTex
+    map: ceilingTexture(),
+    color: zl.ceil
   }));
   for (const g of ceilPieces) g.dispose();
   scene.add(ceiling);
@@ -1802,42 +2122,50 @@ function loadZone(idx, keepHealth) {
   mergeStaticChildren(beamGroup);
   scene.add(beamGroup);
   zoneMeshes.push(beamGroup);
+  const details = buildCeilingDetails(z, hx0, hx1, hz0, hz1);
+  scene.add(details);
+  zoneMeshes.push(details);
+  hemiLight.color.setHex(zl.sky);
+  hemiLight.groundColor.setHex(zl.ground);
+  hemiLight.intensity = zl.hemi;
   const sectorSpots = [ {
     fx: .22,
     fy: .28,
-    color: 13625087,
-    intensity: 1.6
+    color: zl.main,
+    intensity: 2.3
   }, {
     fx: .78,
     fy: .3,
-    color: 13625087,
-    intensity: 1.5
+    color: zl.main,
+    intensity: 2.2
   }, {
     fx: .5,
     fy: .58,
-    color: 14479359,
-    intensity: 1.7
+    color: zl.alt,
+    intensity: 2.4
   }, {
     fx: .24,
     fy: .82,
-    color: 13625087,
-    intensity: 1.4
+    color: zl.main,
+    intensity: 2.1
   }, {
     fx: .78,
     fy: .84,
-    color: 16726586,
-    intensity: .7
+    color: zl.alarm,
+    intensity: 1.7,
+    flicker: true
   } ];
-  for (const s of sectorSpots) {
-    const lx = s.fx * z.worldW, ly = s.fy * z.worldH;
-    const light = new THREE.PointLight(s.color, s.intensity, 440, 2.1);
-    light.position.set(lx, WALL_HEIGHT * .85, ly);
-    scene.add(light);
-    zoneMeshes.push(light);
-    const fixture = buildLampFixture(s.color);
-    fixture.position.set(lx, CEILING_HEIGHT - 20, ly);
-    scene.add(fixture);
-    zoneMeshes.push(fixture);
+  lampRigs = [];
+  shadowLamp = null;
+  pendingLamp = null;
+  shadowW = 0;
+  for (const sp of sectorSpots) {
+    const rig = buildLampRig(sp.fx * z.worldW, sp.fy * z.worldH, sp.color, sp.intensity, sp.flicker);
+    for (const o of rig.objs) {
+      scene.add(o);
+      zoneMeshes.push(o);
+    }
+    lampRigs.push(rig);
   }
   enemies = z.enemies.map(e => createEnemyInstance(e.type, e.x, e.y));
   pickups = z.pickups.map(p => {
@@ -3301,7 +3629,11 @@ function tryPickupItem() {
 }
 function disposeObject3D(obj) {
   obj.traverse(o => {
-    if (o.isMesh) {
+    if (o.isSprite) {
+      if (o.material && !o.material.userData.shared) o.material.dispose();
+      return;
+    }
+    if (o.isMesh || o.isPoints) {
       if (o.geometry) o.geometry.dispose();
       const mats = Array.isArray(o.material) ? o.material : [ o.material ];
       for (const m of mats) {
@@ -3327,31 +3659,6 @@ function buildViewmodel() {
   gunLight.position.set(0, 4, gunViewGroup.userData.muzzleZ || -30);
   camera.add(gunViewGroup);
 }
-const SHADOW_HALF = 650, SHADOW_MAP = 1024;
-const SUN_OFFSET = new THREE.Vector3(300, 500, 200);
-const sunTargetTmp = new THREE.Vector3;
-let sunBasis = null;
-function snapSunTarget(px, pz, out) {
-  if (!sunBasis) {
-    const f = SUN_OFFSET.clone().negate().normalize();
-    const r = (new THREE.Vector3).crossVectors(f, new THREE.Vector3(0, 1, 0)).normalize();
-    const u = (new THREE.Vector3).crossVectors(r, f).normalize();
-    sunBasis = {
-      f: f,
-      r: r,
-      u: u,
-      texel: SHADOW_HALF * 2 / SHADOW_MAP,
-      p: new THREE.Vector3
-    };
-  }
-  const b = sunBasis;
-  b.p.set(px, 0, pz);
-  const a = Math.round(b.p.dot(b.r) / b.texel) * b.texel;
-  const c = Math.round(b.p.dot(b.u) / b.texel) * b.texel;
-  const d = b.p.dot(b.f);
-  out.set(0, 0, 0).addScaledVector(b.r, a).addScaledVector(b.u, c).addScaledVector(b.f, d);
-  return out;
-}
 function updateCameraAndViewmodel(dt) {
   let sx = 0, sy2 = 0, sz = 0;
   if (camShake > 0) {
@@ -3364,11 +3671,6 @@ function updateCameraAndViewmodel(dt) {
   camera.rotation.y = yawFromAngle(player.angle);
   camera.rotation.x = player.pitch;
   camera.rotation.z = 0;
-  if (sunLight) {
-    snapSunTarget(player.x, player.y, sunTargetTmp);
-    sunLight.target.position.copy(sunTargetTmp);
-    sunLight.position.copy(sunTargetTmp).add(SUN_OFFSET);
-  }
   if (gunViewGroup) {
     const t = performance.now() / 1e3;
     const baseYaw = player.weaponKey === "knife" ? 0 : Math.PI;
@@ -3489,6 +3791,7 @@ function updateMinimap() {
 function render(dt) {
   frameCount++;
   updateQuality(dt);
+  updateLamps(dt);
   updateCameraAndViewmodel(dt);
   if (frameCount % 2 === 0) renderer.shadowMap.needsUpdate = true;
   renderer.render(scene, camera);
@@ -3587,21 +3890,20 @@ function boot() {
   }
   try {
     initThree();
-    hemiLight = new THREE.HemisphereLight(9083560, 921100, .32);
+    hemiLight = new THREE.HemisphereLight(9083560, 921100, .22);
     scene.add(hemiLight);
-    sunLight = new THREE.DirectionalLight(14477554, .34);
-    sunLight.position.set(300, 500, 200);
-    sunLight.castShadow = true;
-    sunLight.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
-    sunLight.shadow.camera.left = -SHADOW_HALF;
-    sunLight.shadow.camera.right = SHADOW_HALF;
-    sunLight.shadow.camera.top = SHADOW_HALF;
-    sunLight.shadow.camera.bottom = -SHADOW_HALF;
-    sunLight.shadow.camera.far = 2e3;
-    sunLight.shadow.bias = -.0015;
-    sunLight.shadow.normalBias = .4;
+    sunLight = new THREE.DirectionalLight(14477554, .07);
+    sunLight.position.set(120, 500, 80);
     scene.add(sunLight);
-    scene.add(sunLight.target);
+    shadowSpot = new THREE.SpotLight(16777215, 0, LAMP_RANGE, 1.1, .6, 1.6);
+    shadowSpot.castShadow = true;
+    shadowSpot.shadow.mapSize.set(1024, 1024);
+    shadowSpot.shadow.camera.near = 6;
+    shadowSpot.shadow.camera.far = LAMP_RANGE;
+    shadowSpot.shadow.bias = -4e-4;
+    shadowSpot.shadow.normalBias = .6;
+    scene.add(shadowSpot);
+    scene.add(shadowSpot.target);
     buildViewmodel();
   } catch (err) {
     console.error("Error inicializando el motor 3D:", err);
